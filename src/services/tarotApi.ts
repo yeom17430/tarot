@@ -9,6 +9,7 @@ export type ReadingRequest = {
     name: string;
     koreanName: string;
     orientation: "upright" | "reversed";
+    isReversed: boolean;
     keywords: string[];
     meaning: string;
   }[];
@@ -29,6 +30,7 @@ export async function requestTarotReading(input: {
       name: card.name,
       koreanName: card.koreanName,
       orientation: card.orientation,
+      isReversed: card.isReversed,
       keywords:
         card.orientation === "upright" ? card.uprightKeywords : card.reversedKeywords,
       meaning: card.orientation === "upright" ? card.uprightMeaning : card.reversedMeaning,

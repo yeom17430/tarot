@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import { tarotCards } from "./data/tarotCards";
+import { CARD_BACK_IMAGE, tarotCards } from "./data/tarotCards";
 import { requestTarotReading } from "./services/tarotApi";
 import type { DrawnCard, ReadingResult, SpreadType, TopicId } from "./types/tarot";
 
@@ -94,6 +94,7 @@ async function createReadingImageBlob(input: ReadingImageInput) {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) throw new Error("이미지 복사를 지원하지 않는 브라우저입니다.");
+  const cardImages = await Promise.all(input.cards.map((card) => loadCanvasImage(card.image)));
 
   const drawCommands: ((offsetY: number) => void)[] = [];
   let y = padding;
@@ -168,33 +169,40 @@ async function createReadingImageBlob(input: ReadingImageInput) {
   addCenteredText(`"${input.question}"`, 24, "#d9c89d", 400, 34);
 
   const cardWidth = input.cards.length >= 7 ? 104 : 132;
-  const cardHeight = Math.round(cardWidth * 1.625);
+  const cardHeight = Math.round(cardWidth * 1.5);
   const cardGap = 18;
   const rowWidth = input.cards.length * cardWidth + (input.cards.length - 1) * cardGap;
   const cardStartX = Math.max(padding, (width - rowWidth) / 2);
   addCommand(cardHeight + 78, (top) => {
     input.cards.forEach((card, index) => {
       const x = cardStartX + index * (cardWidth + cardGap);
-      const gradient = context.createLinearGradient(0, top, 0, top + cardHeight);
-      gradient.addColorStop(0, "#f6ecd5");
-      gradient.addColorStop(1, "#d8bf83");
-      context.fillStyle = gradient;
       context.strokeStyle = "#d6b36a";
       context.lineWidth = 2;
       roundRect(context, x, top + 10, cardWidth, cardHeight, 8);
-      context.fill();
+      context.save();
+      context.clip();
+      const cardImage = cardImages[index];
+      if (cardImage) {
+        if (card.isReversed) {
+          context.translate(x + cardWidth / 2, top + 10 + cardHeight / 2);
+          context.rotate(Math.PI);
+          context.drawImage(cardImage, -cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight);
+        } else {
+          context.drawImage(cardImage, x, top + 10, cardWidth, cardHeight);
+        }
+      } else {
+        const gradient = context.createLinearGradient(0, top, 0, top + cardHeight);
+        gradient.addColorStop(0, "#f6ecd5");
+        gradient.addColorStop(1, "#d8bf83");
+        context.fillStyle = gradient;
+        context.fillRect(x, top + 10, cardWidth, cardHeight);
+        context.fillStyle = "#35224e";
+        setFont(42, 700);
+        context.textAlign = "center";
+        context.fillText("☾", x + cardWidth / 2, top + cardHeight / 2);
+      }
+      context.restore();
       context.stroke();
-
-      context.fillStyle = "#211735";
-      setFont(20, 700);
-      context.textAlign = "center";
-      context.fillText(`${card.selectionOrder ?? index + 1}. ${card.koreanName}`, x + cardWidth / 2, top + cardHeight - 48);
-      setFont(16);
-      context.fillText(card.orientation === "upright" ? "정방향" : "역방향", x + cardWidth / 2, top + cardHeight - 22);
-
-      context.fillStyle = "#35224e";
-      setFont(42, 700);
-      context.fillText("☾", x + cardWidth / 2, top + cardHeight / 2);
     });
 
     setFont(20, 700);
@@ -253,6 +261,15 @@ async function createReadingImageBlob(input: ReadingImageInput) {
       }
       reject(new Error("결과 이미지를 만들지 못했습니다."));
     }, "image/png");
+  });
+}
+
+function loadCanvasImage(src: string) {
+  return new Promise<HTMLImageElement | null>((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = src;
   });
 }
 
@@ -341,9 +358,20 @@ function shuffleCards(spreadType: SpreadType, topicId: TopicId | null): DrawnCar
   return shuffleArray(tarotCards).map((card, index) => ({
     ...card,
     drawId: `${card.id}-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
-    orientation: Math.random() < 0.7 ? "upright" : "reversed",
+    isReversed: Math.random() < 0.5,
+    orientation: "upright",
     position: positions[index] ?? "숨겨진 카드",
+  })).map((card) => ({
+    ...card,
+    orientation: card.isReversed ? "reversed" : "upright",
   }));
+}
+
+function preloadCardImages(cards: DrawnCard[]) {
+  cards.forEach((card) => {
+    const image = new Image();
+    image.src = card.image;
+  });
 }
 
 function buildReading(
@@ -518,6 +546,7 @@ export default function App() {
 
   const completeSelection = () => {
     if (selectedCards.length !== requiredCards || isLoadingReading) return;
+    preloadCardImages(selectedCards);
     setStep("reveal");
     setRevealedCards([]);
     selectedCards.forEach((card, index) => {
@@ -1001,36 +1030,49 @@ const RibbonCard = memo(function RibbonCard({
       aria-label={`78장 중 ${index + 1}번째 카드 ${selected ? "선택 취소" : "선택"}`}
     >
       {selected && <span className="selection-badge">{selectedIndex + 1}</span>}
-      <span className="card-mark">✦</span>
+      <span className="card-image-fallback">✦</span>
+      <img
+        src={CARD_BACK_IMAGE}
+        alt="타로 카드 뒷면"
+        onError={(event) => {
+          event.currentTarget.style.display = "none";
+        }}
+      />
     </button>
   );
 });
 
 function TarotCard({ card, revealed }: { card: DrawnCard; revealed: boolean }) {
-  const keywords =
-    card.orientation === "upright" ? card.uprightKeywords : card.reversedKeywords;
-
   return (
     <div className={`tarot-card ${revealed ? "revealed" : ""}`}>
       <div className="tarot-inner">
         <div className="tarot-face tarot-back">
-          <span>✦</span>
+          <span className="card-image-fallback">✦</span>
+          <img
+            src={CARD_BACK_IMAGE}
+            alt="타로 카드 뒷면"
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+            }}
+          />
         </div>
         <div className="tarot-face tarot-front">
-          <div className={`face-art ${card.orientation === "reversed" ? "reversed" : ""}`}>
-            <span className="roman">{card.number}</span>
-            <span className="sigil">☾</span>
-            <span className="constellation">✦ ✧ ✦</span>
-          </div>
-          <strong>
-            {card.selectionOrder ? `${card.selectionOrder}. ` : ""}
-            {card.koreanName}
-          </strong>
-          <small>{card.orientation === "upright" ? "정방향" : "역방향"}</small>
-          <p>{keywords.slice(0, 3).join(" · ")}</p>
+          <span className="card-image-fallback">{card.koreanName}</span>
+          <img
+            src={card.image}
+            alt={`${card.name} ${card.orientation === "upright" ? "정방향" : "역방향"}`}
+            className={card.isReversed ? "reversed" : ""}
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+            }}
+          />
         </div>
       </div>
       <span className="card-caption">{card.position}</span>
+      <span className="card-meta">
+        {card.selectionOrder ? `${card.selectionOrder}. ` : ""}
+        {card.name} · {card.orientation === "upright" ? "정방향" : "역방향"}
+      </span>
     </div>
   );
 }

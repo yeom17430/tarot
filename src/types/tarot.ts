@@ -29,6 +29,7 @@ export type TarotCardData = {
 export type DrawnCard = TarotCardData & {
   drawId: string;
   orientation: CardOrientation;
+  isReversed: boolean;
   position: string;
   selectionOrder?: number;
 };

@@ -282,6 +282,7 @@ function sanitizeReadingRequest(body) {
           name: cleanText(card.name, 80),
           koreanName: cleanText(card.koreanName, 80),
           orientation: card.orientation,
+          isReversed: card.isReversed === true,
           keywords: Array.isArray(card.keywords)
             ? card.keywords.map((keyword) => cleanText(keyword, 30)).filter(Boolean).slice(0, 5)
             : [],
