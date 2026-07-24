@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CARD_BACK_IMAGE, tarotCards } from "./data/tarotCards";
 import { requestTarotReading } from "./services/tarotApi";
 import type { DrawnCard, ReadingResult, SpreadType, TopicId } from "./types/tarot";
@@ -53,7 +53,9 @@ const REVEAL_DELAY_MS: Record<SpreadType, number> = {
   "three-card": 240,
   "seven-card": 180,
 };
-const RESULT_AFTER_REVEAL_BUFFER_MS = 350;
+const REVEAL_FLIP_DURATION_MS = 720;
+const RESULT_AFTER_REVEAL_BUFFER_MS = 500;
+const MIN_LOADING_STAGE_MS = 1200;
 
 type ReadingImageInput = {
   topicLabel: string;
@@ -84,6 +86,12 @@ function preloadImage(src: string) {
 
   imagePreloadCache.set(src, promise);
   return promise;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 async function copyReadingAsImage(input: ReadingImageInput) {
@@ -118,7 +126,11 @@ async function copyReadingAsImage(input: ReadingImageInput) {
 }
 
 async function createReadingImageBlob(input: ReadingImageInput) {
-  const width = 1080;
+  if ("fonts" in document) {
+    await document.fonts.ready.catch(() => undefined);
+  }
+
+  const width = input.cards.length >= 7 ? 1200 : input.cards.length >= 3 ? 900 : 680;
   const padding = 72;
   const contentWidth = width - padding * 2;
   const scale = window.innerWidth <= 760 ? 1 : Math.min(window.devicePixelRatio || 1, 2);
@@ -199,48 +211,108 @@ async function createReadingImageBlob(input: ReadingImageInput) {
   addCenteredText(`${input.topicLabel} · ${input.spreadLabel}`, 22, "#c9c1de", 400, 30);
   addCenteredText(`"${input.question}"`, 24, "#d9c89d", 400, 34);
 
-  const cardWidth = input.cards.length >= 7 ? 104 : 132;
+  const captureRows = input.cards.length >= 7
+    ? [input.cards.slice(0, 4), input.cards.slice(4, 7)]
+    : [input.cards];
+  const cardGridGapX = input.cards.length >= 7 ? 24 : 32;
+  const cardGridGapY = input.cards.length >= 7 ? 54 : 0;
+  const cardCellWidth = input.cards.length >= 7 ? 180 : 178;
+  const cardWidth = input.cards.length >= 7 ? 120 : 132;
   const cardHeight = Math.round(cardWidth * 1.5);
-  const cardGap = 18;
-  const rowWidth = input.cards.length * cardWidth + (input.cards.length - 1) * cardGap;
-  const cardStartX = Math.max(padding, (width - rowWidth) / 2);
-  addCommand(cardHeight + 78, (top) => {
-    input.cards.forEach((card, index) => {
-      const x = cardStartX + index * (cardWidth + cardGap);
-      context.strokeStyle = "#d6b36a";
-      context.lineWidth = 2;
-      roundRect(context, x, top + 10, cardWidth, cardHeight, 8);
-      context.save();
-      context.clip();
-      const cardImage = cardImages[index];
-      if (cardImage) {
-        if (card.isReversed) {
-          context.translate(x + cardWidth / 2, top + 10 + cardHeight / 2);
-          context.rotate(Math.PI);
-          context.drawImage(cardImage, -cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight);
-        } else {
-          context.drawImage(cardImage, x, top + 10, cardWidth, cardHeight);
-        }
-      } else {
-        const gradient = context.createLinearGradient(0, top, 0, top + cardHeight);
-        gradient.addColorStop(0, "#f6ecd5");
-        gradient.addColorStop(1, "#d8bf83");
-        context.fillStyle = gradient;
-        context.fillRect(x, top + 10, cardWidth, cardHeight);
-        context.fillStyle = "#35224e";
-        setFont(42, 700);
-        context.textAlign = "center";
-        context.fillText("☾", x + cardWidth / 2, top + cardHeight / 2);
-      }
-      context.restore();
-      context.stroke();
-    });
+  const positionSize = input.cards.length >= 7 ? 16 : 18;
+  const nameSize = input.cards.length >= 7 ? 14 : 15;
+  const orientationSize = input.cards.length >= 7 ? 13 : 14;
+  const labelGap = 8;
+  const labelLineHeight = Math.round(positionSize * 1.45);
+  const cardLabelTopGap = 18;
+  const captureCardItems = input.cards.map((card, index) => {
+    const positionLines = wrapLines(card.position, cardCellWidth, positionSize, 700);
+    const nameLines = wrapLines(card.name, cardCellWidth, nameSize, 700);
 
-    setFont(20, 700);
-    context.fillStyle = "#d6b36a";
-    input.cards.forEach((card, index) => {
-      const x = cardStartX + index * (cardWidth + cardGap);
-      context.fillText(card.position, x + cardWidth / 2, top + cardHeight + 44);
+    return {
+      card,
+      image: cardImages[index],
+      positionLines,
+      nameLines,
+      orientation: card.isReversed ? "역방향" : "정방향",
+      labelHeight:
+        positionLines.length * labelLineHeight +
+        labelGap +
+        nameLines.length * Math.round(nameSize * 1.45) +
+        labelGap +
+        Math.round(orientationSize * 1.45),
+    };
+  });
+  const maxLabelHeight = Math.max(...captureCardItems.map((item) => item.labelHeight));
+  const cardCellHeight = 10 + cardHeight + cardLabelTopGap + maxLabelHeight;
+  const cardBlockHeight = captureRows.length * cardCellHeight + (captureRows.length - 1) * cardGridGapY + 34;
+
+  addCommand(cardBlockHeight, (top) => {
+    let itemIndex = 0;
+
+    captureRows.forEach((row, rowIndex) => {
+      const rowWidth = row.length * cardCellWidth + (row.length - 1) * cardGridGapX;
+      const rowStartX = (width - rowWidth) / 2;
+      const rowTop = top + rowIndex * (cardCellHeight + cardGridGapY);
+
+      row.forEach((_, columnIndex) => {
+        const item = captureCardItems[itemIndex];
+        itemIndex += 1;
+
+        const cellX = rowStartX + columnIndex * (cardCellWidth + cardGridGapX);
+        const cardX = cellX + (cardCellWidth - cardWidth) / 2;
+        const cardTop = rowTop + 10;
+        const textX = cellX + cardCellWidth / 2;
+        let textY = cardTop + cardHeight + cardLabelTopGap;
+
+        context.strokeStyle = "#d6b36a";
+        context.lineWidth = 2;
+        roundRect(context, cardX, cardTop, cardWidth, cardHeight, 8);
+        context.save();
+        context.clip();
+        if (item.image) {
+          if (item.card.isReversed) {
+            context.translate(cardX + cardWidth / 2, cardTop + cardHeight / 2);
+            context.rotate(Math.PI);
+            context.drawImage(item.image, -cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight);
+          } else {
+            context.drawImage(item.image, cardX, cardTop, cardWidth, cardHeight);
+          }
+        } else {
+          const gradient = context.createLinearGradient(0, cardTop, 0, cardTop + cardHeight);
+          gradient.addColorStop(0, "#f6ecd5");
+          gradient.addColorStop(1, "#d8bf83");
+          context.fillStyle = gradient;
+          context.fillRect(cardX, cardTop, cardWidth, cardHeight);
+          context.fillStyle = "#35224e";
+          setFont(42, 700);
+          context.textAlign = "center";
+          context.fillText("☾", cardX + cardWidth / 2, cardTop + cardHeight / 2);
+        }
+        context.restore();
+        context.stroke();
+
+        context.textAlign = "center";
+        context.fillStyle = "#d6b36a";
+        setFont(positionSize, 700);
+        item.positionLines.forEach((line) => {
+          context.fillText(line, textX, textY);
+          textY += labelLineHeight;
+        });
+
+        textY += labelGap;
+        context.fillStyle = "#fff8e7";
+        setFont(nameSize, 700);
+        item.nameLines.forEach((line) => {
+          context.fillText(line, textX, textY);
+          textY += Math.round(nameSize * 1.45);
+        });
+
+        textY += labelGap;
+        context.fillStyle = "#c9c1de";
+        setFont(orientationSize, 400);
+        context.fillText(item.orientation, textX, textY);
+      });
     });
   });
 
@@ -476,11 +548,13 @@ export default function App() {
   const [shuffledCards, setShuffledCards] = useState<DrawnCard[]>([]);
   const [selectedCards, setSelectedCards] = useState<DrawnCard[]>([]);
   const [revealedCards, setRevealedCards] = useState<DrawnCard[]>([]);
+  const [pendingReadingCards, setPendingReadingCards] = useState<DrawnCard[] | null>(null);
   const [readingResult, setReadingResult] = useState<ReadingResult | null>(null);
   const [isLoadingReading, setIsLoadingReading] = useState(false);
   const [isPreparingReveal, setIsPreparingReveal] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const loadingRequestKeyRef = useRef<string | null>(null);
   const topic = topics.find((item) => item.id === selectedTopic);
   const topicLabel = topic?.label ?? "타로 리딩";
   const effectiveSpreadType = spreadType ?? "one-card";
@@ -504,9 +578,11 @@ export default function App() {
     setIsShuffling(true);
     setSelectedCards([]);
     setRevealedCards([]);
+    setPendingReadingCards(null);
     setReadingResult(null);
     setReadingError(null);
     setSavedMessage(null);
+    loadingRequestKeyRef.current = null;
     setShuffledCards(shuffleCards(nextSpreadType, selectedTopic));
 
     window.setTimeout(() => {
@@ -553,7 +629,6 @@ export default function App() {
         cards,
       });
       setReadingResult(result);
-      setStep("result");
     } catch (error) {
       setReadingResult(buildReading(topicLabel, effectiveQuestion, effectiveSpreadType, cards));
       setReadingError(
@@ -568,9 +643,28 @@ export default function App() {
 
   const generateAiReading = async (cards: DrawnCard[]) => {
     setStep("loading");
-    await requestReadingResult(cards);
+    await wait(80);
+    await Promise.all([requestReadingResult(cards), wait(MIN_LOADING_STAGE_MS)]);
     setStep("result");
   };
+
+  useEffect(() => {
+    if (step !== "loading" || !pendingReadingCards) return;
+
+    const requestKey = pendingReadingCards.map((card) => card.drawId).join("|");
+    if (loadingRequestKeyRef.current === requestKey) return;
+    loadingRequestKeyRef.current = requestKey;
+
+    void (async () => {
+      await wait(80);
+      await Promise.all([
+        requestReadingResult(pendingReadingCards),
+        wait(MIN_LOADING_STAGE_MS),
+      ]);
+      setPendingReadingCards(null);
+      setStep("result");
+    })();
+  }, [pendingReadingCards, step]);
 
   const useTemporaryReading = () => {
     setReadingResult(buildReading(topicLabel, effectiveQuestion, effectiveSpreadType, selectedCards));
@@ -587,7 +681,6 @@ export default function App() {
     setRevealedCards([]);
     setIsPreparingReveal(false);
     const revealDelay = REVEAL_DELAY_MS[effectiveSpreadType];
-    const readingPromise = requestReadingResult(cardsForReveal);
 
     cardsForReveal.forEach((card, index) => {
       window.setTimeout(() => {
@@ -595,11 +688,11 @@ export default function App() {
       }, revealDelay * index);
     });
     window.setTimeout(
-      async () => {
-        await readingPromise;
-        setStep("result");
+      () => {
+        setPendingReadingCards(cardsForReveal);
+        setStep("loading");
       },
-      revealDelay * cardsForReveal.length + RESULT_AFTER_REVEAL_BUFFER_MS,
+      revealDelay * (cardsForReveal.length - 1) + REVEAL_FLIP_DURATION_MS + RESULT_AFTER_REVEAL_BUFFER_MS,
     );
   };
 
@@ -612,10 +705,12 @@ export default function App() {
     setShuffledCards([]);
     setSelectedCards([]);
     setRevealedCards([]);
+    setPendingReadingCards(null);
     setReadingResult(null);
     setIsLoadingReading(false);
     setReadingError(null);
     setSavedMessage(null);
+    loadingRequestKeyRef.current = null;
   };
 
   const copyCurrentReading = async () => {
@@ -878,6 +973,7 @@ export default function App() {
             <StepHeader
               title="카드의 메시지를 해석 중입니다"
               subtitle="선택한 카드들의 흐름을 연결하고 있습니다."
+              note="최대 2분 정도 소요될 수 있습니다."
             />
           </div>
         </section>
@@ -974,12 +1070,21 @@ export default function App() {
   );
 }
 
-function StepHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function StepHeader({
+  title,
+  subtitle,
+  note,
+}: {
+  title: string;
+  subtitle: string;
+  note?: string;
+}) {
   return (
     <header className="step-header">
       <p className="eyebrow">Tarot Chamber</p>
       <h1>{title}</h1>
       <p>{subtitle}</p>
+      {note && <p className="step-note">{note}</p>}
     </header>
   );
 }
