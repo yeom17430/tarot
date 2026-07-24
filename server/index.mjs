@@ -12,8 +12,7 @@ const distDir = join(rootDir, "dist");
 loadEnv(join(rootDir, ".env"));
 
 const app = express();
-const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST || "127.0.0.1";
+const PORT = Number(process.env.PORT) || 8787;
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const geminiApiKey = getGeminiApiKey();
 const allowedOrigins = new Set([
@@ -22,6 +21,8 @@ const allowedOrigins = new Set([
   "http://localhost:8787",
   "http://127.0.0.1:8787",
 ]);
+
+app.set("trust proxy", 1);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -143,8 +144,8 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-const server = app.listen(port, host, () => {
-  console.log(`Tarot API server listening on http://${host}:${port}`);
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Tarot API server listening on 0.0.0.0:${PORT}`);
 });
 
 server.on("error", (error) => {
