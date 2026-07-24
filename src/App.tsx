@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { CARD_BACK_IMAGE, tarotCards } from "./data/tarotCards";
 import { requestTarotReading } from "./services/tarotApi";
 import type { DrawnCard, ReadingResult, SpreadType, TopicId } from "./types/tarot";
@@ -47,6 +47,14 @@ const shuffleMessages = [
   "서두르지 말고 카드의 움직임을 바라보세요.",
 ];
 
+const SHUFFLE_DURATION_MS = 1200;
+const REVEAL_DELAY_MS: Record<SpreadType, number> = {
+  "one-card": 240,
+  "three-card": 240,
+  "seven-card": 180,
+};
+const RESULT_AFTER_REVEAL_BUFFER_MS = 350;
+
 type ReadingImageInput = {
   topicLabel: string;
   spreadLabel: string;
@@ -76,10 +84,6 @@ function preloadImage(src: string) {
 
   imagePreloadCache.set(src, promise);
   return promise;
-}
-
-function preloadTarotDeckImages() {
-  void Promise.all([preloadImage(CARD_BACK_IMAGE), ...tarotCards.map((card) => preloadImage(card.image))]);
 }
 
 async function copyReadingAsImage(input: ReadingImageInput) {
@@ -495,12 +499,7 @@ export default function App() {
   );
   const isInteractionLocked = isLoadingReading || isPreparingReveal;
 
-  useEffect(() => {
-    preloadTarotDeckImages();
-  }, []);
-
   const startShuffle = (nextSpreadType: SpreadType = effectiveSpreadType) => {
-    preloadTarotDeckImages();
     setStep("shuffle");
     setIsShuffling(true);
     setSelectedCards([]);
@@ -512,7 +511,7 @@ export default function App() {
 
     window.setTimeout(() => {
       setIsShuffling(false);
-    }, 2600);
+    }, SHUFFLE_DURATION_MS);
   };
 
   const toggleCard = (card: DrawnCard) => {
@@ -530,7 +529,6 @@ export default function App() {
       return;
     }
     if (selectedCards.length >= requiredCards) return;
-    void preloadImage(card.image);
 
     setSelectedCards((cards) => [
       ...cards,
@@ -542,8 +540,7 @@ export default function App() {
     ]);
   };
 
-  const generateAiReading = async (cards: DrawnCard[]) => {
-    setStep("loading");
+  const requestReadingResult = async (cards: DrawnCard[]) => {
     setIsLoadingReading(true);
     setReadingError(null);
     setSavedMessage(null);
@@ -564,10 +561,15 @@ export default function App() {
           ? error.message
           : "서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해주세요.",
       );
-      setStep("result");
     } finally {
       setIsLoadingReading(false);
     }
+  };
+
+  const generateAiReading = async (cards: DrawnCard[]) => {
+    setStep("loading");
+    await requestReadingResult(cards);
+    setStep("result");
   };
 
   const useTemporaryReading = () => {
@@ -584,16 +586,20 @@ export default function App() {
     setStep("reveal");
     setRevealedCards([]);
     setIsPreparingReveal(false);
+    const revealDelay = REVEAL_DELAY_MS[effectiveSpreadType];
+    const readingPromise = requestReadingResult(cardsForReveal);
+
     cardsForReveal.forEach((card, index) => {
       window.setTimeout(() => {
         setRevealedCards((cards) => [...cards, card]);
-      }, (effectiveSpreadType === "seven-card" ? 300 : 500) * index);
+      }, revealDelay * index);
     });
     window.setTimeout(
-      () => {
-        void generateAiReading(cardsForReveal);
+      async () => {
+        await readingPromise;
+        setStep("result");
       },
-      (effectiveSpreadType === "seven-card" ? 300 : 500) * cardsForReveal.length + 900,
+      revealDelay * cardsForReveal.length + RESULT_AFTER_REVEAL_BUFFER_MS,
     );
   };
 
