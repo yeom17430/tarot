@@ -751,7 +751,7 @@ export default function App() {
           </div>
           {!isShuffling && (
             <p className="ribbon-help">
-              78장의 카드가 두 줄로 펼쳐져 있습니다. 마음이 가는 카드를 바로 선택하세요.
+              78장의 카드 중 마음이 가는 카드를 선택하세요.
             </p>
           )}
           <div className="nav-row">

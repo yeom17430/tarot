@@ -1505,13 +1505,56 @@ blockquote {
   }
 
   .tarot-spread-viewport {
-    --grid-gap: 1px;
-    --card-width: calc((100vw - 50px) / 39);
-    padding: 12px 0;
+    --card-width: 82px;
+    --card-height: 134px;
+    width: calc(100vw - 52px);
+    max-width: 100%;
+    min-height: 174px;
+    padding: 22px 14px 18px;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-block: 1px solid rgba(214, 179, 106, 0.16);
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+  }
+
+  .tarot-spread-viewport::-webkit-scrollbar {
+    display: none;
   }
 
   .tarot-spread-track {
-    width: 100%;
+    width: max-content;
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 10px;
+    padding-inline: calc((100vw - 52px - var(--card-width)) / 2);
+  }
+
+  .tarot-spread-card {
+    flex: 0 0 var(--card-width);
+    border-radius: 7px;
+    scroll-snap-align: center;
+    box-shadow: 0 12px 22px rgba(0, 0, 0, 0.34), inset 0 0 0 7px rgba(214, 179, 106, 0.07);
+  }
+
+  .tarot-spread-card::before {
+    inset: 8px;
+    border-radius: 5px;
+  }
+
+  .selection-badge {
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    font-size: 0.78rem;
+  }
+
+  .card-mark {
+    font-size: 1.65rem;
   }
 
   .tarot-spread-card:hover:not(:disabled),
@@ -1617,7 +1660,14 @@ blockquote {
   }
 
   .tarot-spread-viewport {
-    --card-width: calc((100vw - 34px) / 39);
+    --card-width: 74px;
+    --card-height: 120px;
+    width: calc(100vw - 36px);
+    padding-inline: 10px;
+  }
+
+  .tarot-spread-track {
+    padding-inline: calc((100vw - 36px - var(--card-width)) / 2);
   }
 
   .result-stage {
