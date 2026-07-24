@@ -1,6 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { tarotCards } from "./data/tarotCards";
-import { copyReadingText, saveReading } from "./services/readingStorage";
 import { requestTarotReading } from "./services/tarotApi";
 import type { DrawnCard, ReadingResult, SpreadType, TopicId } from "./types/tarot";
 
@@ -48,7 +47,235 @@ const shuffleMessages = [
   "서두르지 말고 카드의 움직임을 바라보세요.",
 ];
 
-const DRAG_THRESHOLD = 6;
+type ReadingImageInput = {
+  topicLabel: string;
+  spreadLabel: string;
+  question: string;
+  cards: DrawnCard[];
+  result: ReadingResult;
+};
+
+async function copyReadingAsImage(input: ReadingImageInput) {
+  const pngBlob = await createReadingImageBlob(input);
+  if (window.ClipboardItem && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+      return "타로 리딩 결과 이미지를 복사했습니다.";
+    } catch {
+      // Mobile browsers often block image clipboard writes; fall through to share/download.
+    }
+  }
+
+  const file = new File([pngBlob], "tarot-reading.png", { type: "image/png" });
+  if (navigator.canShare?.({ files: [file] })) {
+    await navigator.share({
+      files: [file],
+      title: "타로 리딩 결과",
+    });
+    return "타로 리딩 결과 이미지를 공유했습니다.";
+  }
+
+  const url = URL.createObjectURL(pngBlob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "tarot-reading.png";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return "이미지 복사가 제한되어 PNG 파일로 저장했습니다.";
+}
+
+async function createReadingImageBlob(input: ReadingImageInput) {
+  const width = 1080;
+  const padding = 72;
+  const contentWidth = width - padding * 2;
+  const scale = window.innerWidth <= 760 ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("이미지 복사를 지원하지 않는 브라우저입니다.");
+
+  const drawCommands: ((offsetY: number) => void)[] = [];
+  let y = padding;
+
+  const addCommand = (height: number, draw: (offsetY: number) => void) => {
+    const commandY = y;
+    drawCommands.push((offsetY) => draw(commandY + offsetY));
+    y += height;
+  };
+
+  const setFont = (size: number, weight = 400) => {
+    context.font = `${weight} ${size}px "Noto Serif KR", "Malgun Gothic", serif`;
+  };
+
+  const wrapLines = (text: string, maxWidth: number, size: number, weight = 400) => {
+    setFont(size, weight);
+    const lines: string[] = [];
+    for (const paragraph of text.split(/\n+/)) {
+      let line = "";
+      for (const char of paragraph) {
+        const next = `${line}${char}`;
+        if (line && context.measureText(next).width > maxWidth) {
+          lines.push(line);
+          line = char.trimStart();
+        } else {
+          line = next;
+        }
+      }
+      if (line) lines.push(line);
+    }
+    return lines;
+  };
+
+  const addCenteredText = (text: string, size: number, color: string, weight = 400, gap = 14) => {
+    const lines = wrapLines(text, contentWidth, size, weight);
+    const lineHeight = Math.round(size * 1.55);
+    addCommand(lines.length * lineHeight + gap, (top) => {
+      setFont(size, weight);
+      context.fillStyle = color;
+      context.textAlign = "center";
+      lines.forEach((line, index) => {
+        context.fillText(line, width / 2, top + lineHeight * (index + 0.8));
+      });
+    });
+  };
+
+  const addSectionTitle = (title: string) => {
+    addCommand(54, (top) => {
+      setFont(30, 700);
+      context.fillStyle = "#d8e0ff";
+      context.textAlign = "center";
+      context.fillText(title, width / 2, top + 32);
+    });
+  };
+
+  const addParagraph = (text: string) => {
+    const lines = wrapLines(text, contentWidth, 25);
+    const lineHeight = 42;
+    addCommand(lines.length * lineHeight + 32, (top) => {
+      setFont(25);
+      context.fillStyle = "#d7cede";
+      context.textAlign = "center";
+      lines.forEach((line, index) => {
+        context.fillText(line, width / 2, top + lineHeight * (index + 0.8));
+      });
+    });
+  };
+
+  addCenteredText("Moonlit Tarot", 20, "#d6b36a", 700, 8);
+  addCenteredText(input.result.title || "타로 리딩 결과", 48, "#fff8e7", 700, 18);
+  addCenteredText(`${input.topicLabel} · ${input.spreadLabel}`, 22, "#c9c1de", 400, 30);
+  addCenteredText(`"${input.question}"`, 24, "#d9c89d", 400, 34);
+
+  const cardWidth = input.cards.length >= 7 ? 104 : 132;
+  const cardHeight = Math.round(cardWidth * 1.625);
+  const cardGap = 18;
+  const rowWidth = input.cards.length * cardWidth + (input.cards.length - 1) * cardGap;
+  const cardStartX = Math.max(padding, (width - rowWidth) / 2);
+  addCommand(cardHeight + 78, (top) => {
+    input.cards.forEach((card, index) => {
+      const x = cardStartX + index * (cardWidth + cardGap);
+      const gradient = context.createLinearGradient(0, top, 0, top + cardHeight);
+      gradient.addColorStop(0, "#f6ecd5");
+      gradient.addColorStop(1, "#d8bf83");
+      context.fillStyle = gradient;
+      context.strokeStyle = "#d6b36a";
+      context.lineWidth = 2;
+      roundRect(context, x, top + 10, cardWidth, cardHeight, 8);
+      context.fill();
+      context.stroke();
+
+      context.fillStyle = "#211735";
+      setFont(20, 700);
+      context.textAlign = "center";
+      context.fillText(`${card.selectionOrder ?? index + 1}. ${card.koreanName}`, x + cardWidth / 2, top + cardHeight - 48);
+      setFont(16);
+      context.fillText(card.orientation === "upright" ? "정방향" : "역방향", x + cardWidth / 2, top + cardHeight - 22);
+
+      context.fillStyle = "#35224e";
+      setFont(42, 700);
+      context.fillText("☾", x + cardWidth / 2, top + cardHeight / 2);
+    });
+
+    setFont(20, 700);
+    context.fillStyle = "#d6b36a";
+    input.cards.forEach((card, index) => {
+      const x = cardStartX + index * (cardWidth + cardGap);
+      context.fillText(card.position, x + cardWidth / 2, top + cardHeight + 44);
+    });
+  });
+
+  addSectionTitle("전체 종합 해석");
+  addParagraph(input.result.overallReading);
+
+  addSectionTitle("핵심 흐름");
+  addParagraph(
+    [
+      `현재 흐름: ${input.result.highlights.currentFlow}`,
+      `가장 큰 장애물: ${input.result.highlights.mainObstacle}`,
+      `열려 있는 가능성: ${input.result.highlights.possibility}`,
+      `지금 필요한 태도: ${input.result.highlights.recommendedAttitude}`,
+    ].join("\n"),
+  );
+
+  addSectionTitle("카드 간 연결 해석");
+  addParagraph(input.result.cardConnection);
+  addSectionTitle("현실적인 조언");
+  addParagraph(input.result.practicalAdvice);
+  addSectionTitle("지금 기억하면 좋은 한마디");
+  addParagraph(input.result.finalMessage);
+  addParagraph(input.result.disclaimer);
+
+  const height = Math.ceil(y + padding);
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  context.scale(scale, scale);
+
+  const background = context.createLinearGradient(0, 0, 0, height);
+  background.addColorStop(0, "#090818");
+  background.addColorStop(0.5, "#11122b");
+  background.addColorStop(1, "#171334");
+  context.fillStyle = background;
+  context.fillRect(0, 0, width, height);
+
+  context.strokeStyle = "rgba(214, 179, 106, 0.34)";
+  context.lineWidth = 2;
+  roundRect(context, 24, 24, width - 48, height - 48, 8);
+  context.stroke();
+
+  drawCommands.forEach((draw) => draw(0));
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+      reject(new Error("결과 이미지를 만들지 못했습니다."));
+    }, "image/png");
+  });
+}
+
+function roundRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(x + width - radius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + radius);
+  context.lineTo(x + width, y + height - radius);
+  context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  context.lineTo(x + radius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
 
 function shuffleArray<T>(items: T[]): T[] {
   const copiedItems = [...items];
@@ -174,12 +401,14 @@ function buildCardInterpretation(card: DrawnCard, questionText: string) {
     card.orientation === "upright" ? card.uprightKeywords : card.reversedKeywords;
   const meaning = card.orientation === "upright" ? card.uprightMeaning : card.reversedMeaning;
   const direction = card.orientation === "upright" ? "정방향" : "역방향";
-  const opener =
+  const firstLine =
     card.orientation === "upright"
       ? `${card.position}에 나온 ${card.koreanName} ${direction}은 ${keywords[0]}의 흐름이 살아 있다는 걸 보여줘요.`
       : `${card.position}에서 ${card.koreanName} 카드가 ${direction}으로 나온 걸 보면, ${keywords[0]} 쪽을 조금 조심해서 살펴볼 필요가 있어 보여요.`;
+  const secondLine = `${questionText}과 연결하면, 이 카드는 지금의 결과보다 마음가짐과 선택 방식이 상황을 움직이고 있다는 신호에 가까워요.`;
+  const thirdLine = `${meaning} 그래서 ${keywords[1] ?? keywords[0]}에만 끌려가기보다, 현실에서 확인할 수 있는 작은 변화부터 차분히 보는 편이 좋아 보여요.`;
 
-  return `${opener} ${questionText}과 연결해서 보면, 이 카드는 겉으로 보이는 결과보다 지금 어떤 마음과 태도가 상황을 움직이고 있는지 보라고 말해주는 카드예요. ${meaning} 그래서 이 위치에서는 ${keywords[1] ?? keywords[0]}에 너무 끌려가기보다, 현실에서 확인할 수 있는 작은 신호부터 차분히 보는 편이 좋아 보여요.`;
+  return `${firstLine}\n${secondLine}\n${thirdLine}`;
 }
 
 export default function App() {
@@ -195,15 +424,6 @@ export default function App() {
   const [isLoadingReading, setIsLoadingReading] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
-  const spreadRef = useRef<HTMLDivElement | null>(null);
-  const dragStateRef = useRef({
-    isDown: false,
-    startX: 0,
-    scrollLeft: 0,
-    hasDragged: false,
-  });
-  const suppressClickRef = useRef(false);
-
   const topic = topics.find((item) => item.id === selectedTopic);
   const topicLabel = topic?.label ?? "타로 리딩";
   const effectiveSpreadType = spreadType ?? "one-card";
@@ -221,16 +441,6 @@ export default function App() {
     [isShuffling],
   );
 
-  useEffect(() => {
-    if (step !== "shuffle" || isShuffling || shuffledCards.length === 0) return;
-
-    window.requestAnimationFrame(() => {
-      const element = spreadRef.current;
-      if (!element) return;
-      element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
-    });
-  }, [isShuffling, shuffledCards.length, step]);
-
   const startShuffle = (nextSpreadType: SpreadType = effectiveSpreadType) => {
     setStep("shuffle");
     setIsShuffling(true);
@@ -247,10 +457,6 @@ export default function App() {
   };
 
   const toggleCard = (card: DrawnCard) => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false;
-      return;
-    }
     if (isShuffling || isLoadingReading) return;
     const exists = selectedCards.some((selected) => selected.drawId === card.drawId);
     if (exists) {
@@ -274,65 +480,6 @@ export default function App() {
         position: spreadPositions[cards.length] ?? card.position,
       },
     ]);
-  };
-
-  const scrollRibbon = (direction: -1 | 1) => {
-    spreadRef.current?.scrollBy({
-      left: direction * 360,
-      behavior: "smooth",
-    });
-  };
-
-  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-
-    event.currentTarget.scrollLeft += event.deltaY;
-    event.preventDefault();
-  };
-
-  const handleRibbonPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    const element = spreadRef.current;
-    if (!element || isShuffling) return;
-
-    dragStateRef.current = {
-      isDown: true,
-      startX: event.clientX,
-      scrollLeft: element.scrollLeft,
-      hasDragged: false,
-    };
-  };
-
-  const handleRibbonPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const element = spreadRef.current;
-    const dragState = dragStateRef.current;
-    if (!element || !dragState.isDown) return;
-
-    const movement = event.clientX - dragState.startX;
-    if (Math.abs(movement) > DRAG_THRESHOLD) {
-      dragState.hasDragged = true;
-      suppressClickRef.current = true;
-    }
-
-    element.scrollLeft = dragState.scrollLeft - movement;
-  };
-
-  const endRibbonDrag = () => {
-    dragStateRef.current.isDown = false;
-    window.setTimeout(() => {
-      suppressClickRef.current = false;
-    }, 0);
-  };
-
-  const handleRibbonKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft") {
-      scrollRibbon(-1);
-      event.preventDefault();
-    }
-
-    if (event.key === "ArrowRight") {
-      scrollRibbon(1);
-      event.preventDefault();
-    }
   };
 
   const generateAiReading = async (cards: DrawnCard[]) => {
@@ -401,35 +548,21 @@ export default function App() {
     setSavedMessage(null);
   };
 
-  const persistCurrentReading = () => {
-    if (!readingResult) return;
-    try {
-      saveReading({
-        topic: topicLabel,
-        question: effectiveQuestion,
-        spreadType: effectiveSpreadType,
-        cards: selectedCards,
-        result: readingResult,
-      });
-      setSavedMessage("결과를 이 브라우저에 저장했습니다.");
-    } catch {
-      setSavedMessage("저장 공간을 확인해주세요.");
-    }
-  };
-
   const copyCurrentReading = async () => {
     if (!readingResult) return;
     try {
-      await copyReadingText({
-        topic: topicLabel,
+      const message = await copyReadingAsImage({
+        topicLabel,
+        spreadLabel: spreadLabels[effectiveSpreadType],
         question: effectiveQuestion,
-        spreadType: effectiveSpreadType,
         cards: selectedCards,
         result: readingResult,
       });
-      setSavedMessage("타로 리딩 결과를 복사했습니다.");
-    } catch {
-      setSavedMessage("클립보드 복사 권한을 확인해주세요.");
+      setSavedMessage(message);
+    } catch (error) {
+      setSavedMessage(
+        error instanceof Error ? error.message : "이미지 복사 권한을 확인해주세요.",
+      );
     }
   };
 
@@ -588,43 +721,18 @@ export default function App() {
               })}
             </div>
           )}
-          <div className="ribbon-shell">
-            <button
-              className="ribbon-arrow ribbon-arrow-left"
-              disabled={isShuffling}
-              onClick={() => scrollRibbon(-1)}
-              aria-label="카드 리본 왼쪽으로 이동"
-            >
-              ‹
-            </button>
+          <div className="tarot-grid-shell">
             <div
-              ref={spreadRef}
               className={`tarot-spread-viewport ${isShuffling ? "is-shuffling" : "is-ready"}`}
-              onWheel={handleWheel}
-              onPointerDown={handleRibbonPointerDown}
-              onPointerMove={handleRibbonPointerMove}
-              onPointerUp={endRibbonDrag}
-              onPointerCancel={endRibbonDrag}
-              onPointerLeave={endRibbonDrag}
-              onKeyDown={handleRibbonKeyDown}
-              tabIndex={0}
               role="group"
-              aria-label="78장 타로 카드 리본 스프레드"
+              aria-label="78장 타로 카드 선택판"
             >
-              <div
-                className="tarot-spread-track"
-                style={{ "--card-count": shuffledCards.length } as React.CSSProperties}
-              >
+              <div className="tarot-spread-track">
                 {shuffledCards.map((card, index) => {
                   const selectedIndex = selectedCards.findIndex(
                     (selectedCard) => selectedCard.drawId === card.drawId,
                   );
                   const selected = selectedIndex >= 0;
-                  const normalized =
-                    shuffledCards.length <= 1 ? 0.5 : index / (shuffledCards.length - 1);
-                  const distanceFromCenter = Math.abs(normalized - 0.5) * 2;
-                  const translateY = distanceFromCenter * 18;
-                  const rotate = (normalized - 0.5) * 8;
 
                   return (
                     <RibbonCard
@@ -634,26 +742,16 @@ export default function App() {
                       selected={selected}
                       selectedIndex={selectedIndex}
                       disabled={isShuffling || isLoadingReading}
-                      translateY={translateY}
-                      rotate={rotate}
                       onSelect={toggleCard}
                     />
                   );
                 })}
               </div>
             </div>
-            <button
-              className="ribbon-arrow ribbon-arrow-right"
-              disabled={isShuffling}
-              onClick={() => scrollRibbon(1)}
-              aria-label="카드 리본 오른쪽으로 이동"
-            >
-              ›
-            </button>
           </div>
           {!isShuffling && (
             <p className="ribbon-help">
-              카드를 좌우로 드래그하거나 스와이프해서 살펴보세요. 마우스를 올리면 카드가 위로 올라옵니다.
+              78장의 카드가 두 줄로 펼쳐져 있습니다. 마음이 가는 카드를 바로 선택하세요.
             </p>
           )}
           <div className="nav-row">
@@ -701,90 +799,81 @@ export default function App() {
 
       {step === "loading" && (
         <section className="stage loading-stage" aria-live="polite">
-          <div className="oracle-loader" aria-hidden="true">
-            <span />
-            <span />
-            <span />
+          <div className="loading-content">
+            <div className="oracle-loader" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <StepHeader
+              title="카드의 메시지를 해석 중입니다"
+              subtitle="선택한 카드들의 흐름을 연결하고 있습니다."
+            />
           </div>
-          <StepHeader
-            title="카드의 메시지를 해석하고 있습니다"
-            subtitle="선택한 카드들의 흐름을 연결하고 있습니다."
-          />
         </section>
       )}
 
       {step === "result" && (
         <section className="stage result-stage">
-          <ResultHeader
-            title={readingResult?.title ?? "타로 리딩 결과"}
-            subtitle={getResultSubtitle(topicLabel, effectiveSpreadType)}
-            meta={`${topicLabel} · ${spreadLabels[effectiveSpreadType]}`}
-            question={effectiveQuestion}
-          />
-          <div className={`reveal-row result-cards ${effectiveSpreadType === "seven-card" ? "seven-card-layout" : ""}`}>
-            {selectedCards.map((card) => (
-              <TarotCard key={card.drawId} card={card} revealed />
-            ))}
-          </div>
-          {readingError && (
-            <div className="error-panel">
-              <strong>{readingError}</strong>
-              <p>기본 해석으로 결과를 표시했습니다. 설정을 확인한 뒤 다시 시도할 수 있습니다.</p>
+          <div className="result-capture">
+            <ResultHeader
+              title={readingResult?.title ?? "타로 리딩 결과"}
+              subtitle={getResultSubtitle(topicLabel, effectiveSpreadType)}
+              meta={`${topicLabel} · ${spreadLabels[effectiveSpreadType]}`}
+              question={effectiveQuestion}
+            />
+            <div className={`reveal-row result-cards ${effectiveSpreadType === "seven-card" ? "seven-card-layout" : ""}`}>
+              {selectedCards.map((card) => (
+                <TarotCard key={card.drawId} card={card} revealed />
+              ))}
             </div>
-          )}
-          {readingResult && (
-            <article className="reading-copy">
-              <section className="overall-panel">
-                <h2>전체 종합 해석</h2>
-                <ParagraphText text={readingResult.overallReading} />
-              </section>
-              <section className="highlight-grid" aria-label="핵심 흐름 한눈에 보기">
-                <HighlightItem title="현재 흐름" text={readingResult.highlights.currentFlow} />
-                <HighlightItem title="가장 큰 장애물" text={readingResult.highlights.mainObstacle} />
-                <HighlightItem title="열려 있는 가능성" text={readingResult.highlights.possibility} />
-                <HighlightItem title="지금 필요한 태도" text={readingResult.highlights.recommendedAttitude} />
-              </section>
-              <h2>카드별 해석</h2>
-              <div className="card-reading-list">
-                {readingResult.cardReadings.map((item) => (
-                <section className="card-reading-item" key={`${item.position}-${item.cardName}`}>
-                  <h3>
-                    {item.position} - {item.koreanName} (
-                    {item.orientation === "upright" ? "정방향" : "역방향"})
-                  </h3>
-                  <ParagraphText text={item.interpretation} />
-                </section>
-                ))}
+            {readingError && (
+              <div className="error-panel">
+                <strong>{readingError}</strong>
+                <p>기본 해석으로 결과를 표시했습니다. 설정을 확인한 뒤 다시 시도할 수 있습니다.</p>
               </div>
-              <h2>카드 간 연결 해석</h2>
-              <ParagraphText text={readingResult.cardConnection} />
-              <h2>현실적인 조언</h2>
-              <ParagraphText text={readingResult.practicalAdvice} />
-              <h2>지금 기억하면 좋은 한마디</h2>
-              <blockquote>{readingResult.finalMessage}</blockquote>
-              {readingResult.generatedBy === "fallback" && (
-                <p className="provider-note">기본 해석으로 생성됨</p>
-              )}
-            </article>
-          )}
-          <p className="disclaimer">
-            이 타로 리딩은 오락과 자기 성찰을 위한 참고 콘텐츠입니다. 중요한 결정은 현실적인
-            정보와 전문가의 조언을 함께 고려해주세요.
-          </p>
-          {savedMessage && <p className="status-line">{savedMessage}</p>}
-          <div className="nav-row">
+            )}
+            {readingResult && (
+              <article className="reading-copy">
+                <section className="overall-panel">
+                  <h2>전체 종합 해석</h2>
+                  <ParagraphText text={readingResult.overallReading} />
+                </section>
+                <section className="highlight-grid" aria-label="핵심 흐름 한눈에 보기">
+                  <HighlightItem title="현재 흐름" text={readingResult.highlights.currentFlow} />
+                  <HighlightItem title="가장 큰 장애물" text={readingResult.highlights.mainObstacle} />
+                  <HighlightItem title="열려 있는 가능성" text={readingResult.highlights.possibility} />
+                  <HighlightItem title="지금 필요한 태도" text={readingResult.highlights.recommendedAttitude} />
+                </section>
+                <h2>카드 간 연결 해석</h2>
+                <div className="card-reading-list">
+                  <section className="card-reading-item">
+                    <ParagraphText text={readingResult.cardConnection} />
+                  </section>
+                </div>
+                <h2>현실적인 조언</h2>
+                <ParagraphText text={readingResult.practicalAdvice} />
+                <h2>지금 기억하면 좋은 한마디</h2>
+                <blockquote>{readingResult.finalMessage}</blockquote>
+                {readingResult.generatedBy === "fallback" && (
+                  <p className="provider-note">기본 해석으로 생성됨</p>
+                )}
+              </article>
+            )}
+            <p className="disclaimer">
+              이 타로 리딩은 오락과 자기 성찰을 위한 참고 콘텐츠입니다. 중요한 결정은 현실적인
+              정보와 전문가의 조언을 함께 고려해주세요.
+            </p>
+          </div>
+          {savedMessage && <p className="status-line" data-copy-exclude="true">{savedMessage}</p>}
+          <div className="nav-row" data-copy-exclude="true">
             <button className="ghost-action" onClick={restart}>
               처음으로
             </button>
             {readingResult && (
-              <>
-                <button className="ghost-action" onClick={persistCurrentReading}>
-                  결과 저장
-                </button>
-                <button className="ghost-action" onClick={() => void copyCurrentReading()}>
-                  결과 복사
-                </button>
-              </>
+              <button className="ghost-action" onClick={() => void copyCurrentReading()}>
+                결과 이미지 복사
+              </button>
             )}
             {readingError && (
               <>
@@ -847,14 +936,11 @@ function ResultHeader({
   meta: string;
   question: string;
 }) {
-  const mainTitle = title.length > 28 ? `${title.slice(0, 28).trim()}...` : title;
-  const titleSubtitle = title.length > 28 ? `${subtitle} · ${title}` : subtitle;
-
   return (
     <header className="result-hero">
       <p className="result-kicker">Tarot Chamber</p>
-      <h1 title={title}>{mainTitle}</h1>
-      <p className="result-subtitle">{titleSubtitle}</p>
+      <h1 title={title}>{title}</h1>
+      <p className="result-subtitle">{subtitle}</p>
       <p className="result-meta">{meta}</p>
       <p className="question-line">"{question}"</p>
     </header>
@@ -865,7 +951,14 @@ function ParagraphText({ text }: { text: string }) {
   return (
     <>
       {text.split(/\n{2,}/).map((paragraph) => (
-        <p key={paragraph}>{paragraph}</p>
+        <p key={paragraph}>
+          {paragraph.split("\n").map((line, index, lines) => (
+            <span key={`${line}-${index}`}>
+              {line}
+              {index < lines.length - 1 && <br />}
+            </span>
+          ))}
+        </p>
       ))}
     </>
   );
@@ -886,8 +979,6 @@ const RibbonCard = memo(function RibbonCard({
   selected,
   selectedIndex,
   disabled,
-  translateY,
-  rotate,
   onSelect,
 }: {
   card: DrawnCard;
@@ -895,8 +986,6 @@ const RibbonCard = memo(function RibbonCard({
   selected: boolean;
   selectedIndex: number;
   disabled: boolean;
-  translateY: number;
-  rotate: number;
   onSelect: (card: DrawnCard) => void;
 }) {
   return (
@@ -905,8 +994,6 @@ const RibbonCard = memo(function RibbonCard({
       style={
         {
           "--i": index,
-          "--base-y": `${translateY}px`,
-          "--base-rotate": `${rotate}deg`,
         } as React.CSSProperties
       }
       disabled={disabled}

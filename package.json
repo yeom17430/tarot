@@ -11,6 +11,7 @@
     "preview": "node server/index.mjs"
   },
   "dependencies": {
+    "@amplitude/unified": "^1.1.27",
     "@google/genai": "^1.0.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.0",

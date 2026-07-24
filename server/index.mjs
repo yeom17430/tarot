@@ -13,6 +13,7 @@ loadEnv(join(rootDir, ".env"));
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
+const host = process.env.HOST || "127.0.0.1";
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const geminiApiKey = getGeminiApiKey();
 const allowedOrigins = new Set([
@@ -142,8 +143,16 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Tarot API server listening on http://localhost:${port}`);
+const server = app.listen(port, host, () => {
+  console.log(`Tarot API server listening on http://${host}:${port}`);
+});
+
+server.on("error", (error) => {
+  console.error("Tarot API server error", error);
+});
+
+server.on("close", () => {
+  console.log("Tarot API server closed");
 });
 
 async function createGeminiReading(input) {
@@ -246,9 +255,11 @@ function createPrompt(input) {
     ),
     "",
     "[분량 규칙]",
-    "한 장 리딩: overallReading은 2~3문단, 카드별 해석은 3~5문장, practicalAdvice는 2~4문장으로 작성하세요.",
-    "세 장 리딩: overallReading은 3~5문단, 각 카드별 해석은 3~5문장, cardConnection은 2~4문단, practicalAdvice는 3~5문장으로 작성하세요.",
-    "일곱 장 리딩: overallReading은 5~8문단, 각 카드별 해석은 2~4문장, cardConnection은 3~5문단, practicalAdvice는 4~6문장으로 작성하세요.",
+    "카드별 해석 interpretation은 카드마다 정확히 3문장으로 작성하세요.",
+    "카드별 해석은 문장 사이에 줄바꿈을 넣어 3줄처럼 보이게 하세요.",
+    "한 장 리딩: overallReading은 2~3문단, practicalAdvice는 2~4문장으로 작성하세요.",
+    "세 장 리딩: overallReading은 3~5문단, cardConnection은 2~4문단, practicalAdvice는 3~5문장으로 작성하세요.",
+    "일곱 장 리딩: overallReading은 5~8문단, cardConnection은 3~5문단, practicalAdvice는 4~6문장으로 작성하세요.",
     "",
     "JSON 앞뒤에 설명, 인사말, 마크다운 코드 블록을 추가하지 마세요.",
     "",
@@ -422,8 +433,9 @@ function createFallbackCardReading(card, index, questionText) {
     card.orientation === "upright"
       ? `${questionText}과 연결하면, 이 카드는 아직 활용할 수 있는 힘이나 가능성이 남아 있다는 쪽에 가까워요.`
       : `${questionText}과 연결하면, 이 카드는 마음이 급해지거나 같은 패턴을 반복하지 않도록 속도를 늦춰보라는 신호에 가까워요.`;
+  const advice = `${meaning} 그래서 지금은 ${secondaryKeyword}에만 마음을 빼앗기기보다, 실제 상황에서 확인할 수 있는 작은 변화와 내 반응을 함께 살펴보는 편이 좋아 보여요.`;
 
-  return `${openers[index % openers.length]} ${bridge} ${meaning} 그래서 지금은 ${secondaryKeyword}에만 마음을 빼앗기기보다, 실제 상황에서 확인할 수 있는 작은 변화와 내 반응을 함께 살펴보는 편이 좋아 보여요.`;
+  return `${openers[index % openers.length]}\n${bridge}\n${advice}`;
 }
 
 function getErrorStatus(error) {
