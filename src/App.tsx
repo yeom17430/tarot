@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { CARD_BACK_IMAGE, tarotCards } from "./data/tarotCards";
 import { requestTarotReading } from "./services/tarotApi";
 import type { DrawnCard, ReadingResult, SpreadType, TopicId } from "./types/tarot";
@@ -54,6 +54,33 @@ type ReadingImageInput = {
   cards: DrawnCard[];
   result: ReadingResult;
 };
+
+const imagePreloadCache = new Map<string, Promise<void>>();
+
+function preloadImage(src: string) {
+  const cached = imagePreloadCache.get(src);
+  if (cached) return cached;
+
+  const promise = new Promise<void>((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      if (image.decode) {
+        image.decode().then(resolve).catch(resolve);
+        return;
+      }
+      resolve();
+    };
+    image.onerror = () => resolve();
+    image.src = src;
+  });
+
+  imagePreloadCache.set(src, promise);
+  return promise;
+}
+
+function preloadTarotDeckImages() {
+  void Promise.all([preloadImage(CARD_BACK_IMAGE), ...tarotCards.map((card) => preloadImage(card.image))]);
+}
 
 async function copyReadingAsImage(input: ReadingImageInput) {
   const pngBlob = await createReadingImageBlob(input);
@@ -367,11 +394,8 @@ function shuffleCards(spreadType: SpreadType, topicId: TopicId | null): DrawnCar
   }));
 }
 
-function preloadCardImages(cards: DrawnCard[]) {
-  cards.forEach((card) => {
-    const image = new Image();
-    image.src = card.image;
-  });
+async function preloadCardImages(cards: DrawnCard[]) {
+  await Promise.all([preloadImage(CARD_BACK_IMAGE), ...cards.map((card) => preloadImage(card.image))]);
 }
 
 function buildReading(
@@ -450,6 +474,7 @@ export default function App() {
   const [revealedCards, setRevealedCards] = useState<DrawnCard[]>([]);
   const [readingResult, setReadingResult] = useState<ReadingResult | null>(null);
   const [isLoadingReading, setIsLoadingReading] = useState(false);
+  const [isPreparingReveal, setIsPreparingReveal] = useState(false);
   const [readingError, setReadingError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const topic = topics.find((item) => item.id === selectedTopic);
@@ -468,8 +493,14 @@ export default function App() {
     () => shuffleMessages[Math.floor(Math.random() * shuffleMessages.length)],
     [isShuffling],
   );
+  const isInteractionLocked = isLoadingReading || isPreparingReveal;
+
+  useEffect(() => {
+    preloadTarotDeckImages();
+  }, []);
 
   const startShuffle = (nextSpreadType: SpreadType = effectiveSpreadType) => {
+    preloadTarotDeckImages();
     setStep("shuffle");
     setIsShuffling(true);
     setSelectedCards([]);
@@ -485,7 +516,7 @@ export default function App() {
   };
 
   const toggleCard = (card: DrawnCard) => {
-    if (isShuffling || isLoadingReading) return;
+    if (isShuffling || isInteractionLocked) return;
     const exists = selectedCards.some((selected) => selected.drawId === card.drawId);
     if (exists) {
       setSelectedCards((cards) => {
@@ -499,6 +530,7 @@ export default function App() {
       return;
     }
     if (selectedCards.length >= requiredCards) return;
+    void preloadImage(card.image);
 
     setSelectedCards((cards) => [
       ...cards,
@@ -544,21 +576,24 @@ export default function App() {
     setStep("result");
   };
 
-  const completeSelection = () => {
-    if (selectedCards.length !== requiredCards || isLoadingReading) return;
-    preloadCardImages(selectedCards);
+  const completeSelection = async () => {
+    if (selectedCards.length !== requiredCards || isShuffling || isInteractionLocked) return;
+    const cardsForReveal = selectedCards;
+    setIsPreparingReveal(true);
+    await preloadCardImages(cardsForReveal);
     setStep("reveal");
     setRevealedCards([]);
-    selectedCards.forEach((card, index) => {
+    setIsPreparingReveal(false);
+    cardsForReveal.forEach((card, index) => {
       window.setTimeout(() => {
         setRevealedCards((cards) => [...cards, card]);
       }, (effectiveSpreadType === "seven-card" ? 300 : 500) * index);
     });
     window.setTimeout(
       () => {
-        void generateAiReading(selectedCards);
+        void generateAiReading(cardsForReveal);
       },
-      (effectiveSpreadType === "seven-card" ? 300 : 500) * selectedCards.length + 900,
+      (effectiveSpreadType === "seven-card" ? 300 : 500) * cardsForReveal.length + 900,
     );
   };
 
@@ -739,7 +774,7 @@ export default function App() {
                   <button
                     key={position}
                     className={`selection-slot ${card ? "filled" : ""}`}
-                    disabled={!card || isLoadingReading}
+                    disabled={!card || isInteractionLocked}
                     onClick={() => card && toggleCard(card)}
                     aria-label={card ? `${index + 1}번째 선택 카드 취소` : `${position} 빈 슬롯`}
                   >
@@ -770,7 +805,7 @@ export default function App() {
                       index={index}
                       selected={selected}
                       selectedIndex={selectedIndex}
-                      disabled={isShuffling || isLoadingReading}
+                      disabled={isShuffling || isInteractionLocked}
                       onSelect={toggleCard}
                     />
                   );
@@ -795,17 +830,17 @@ export default function App() {
             </button>
             <button
               className="ghost-action"
-              disabled={isShuffling || isLoadingReading}
+              disabled={isShuffling || isInteractionLocked}
               onClick={() => startShuffle(effectiveSpreadType)}
             >
               다시 섞기
             </button>
             <button
               className="primary-action compact"
-              disabled={selectedCards.length !== requiredCards || isShuffling || isLoadingReading}
+              disabled={selectedCards.length !== requiredCards || isShuffling || isInteractionLocked}
               onClick={completeSelection}
             >
-              선택 완료
+              {isPreparingReveal ? "카드 준비 중" : "선택 완료"}
             </button>
           </div>
         </section>
